@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="description" content="UltraMap — plan runs, hikes and backcountry trips with trail-snapping routes, instant elevation profiles, 3D terrain and weather." />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⛰️</text></svg>" />
+    <title>UltraMap — plan further</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script>
+      // Keep animation frames flowing in hidden/throttled tabs (browsers
+      // suspend requestAnimationFrame there, which would freeze map loading
+      // for background tabs). Races the real rAF against a slow timeout;
+      // in visible tabs the native rAF always wins.
+      (function () {
+        var nativeRaf = window.requestAnimationFrame.bind(window);
+        var nativeCancel = window.cancelAnimationFrame.bind(window);
+        window.requestAnimationFrame = function (cb) {
+          var settled = false;
+          var timer = setTimeout(function () {
+            if (settled) return;
+            settled = true;
+            nativeCancel(rafId);
+            cb(performance.now());
+          }, 250);
+          var rafId = nativeRaf(function (t) {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timer);
+            cb(t);
+          });
+          return rafId;
+        };
+      })();
+    </script>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
