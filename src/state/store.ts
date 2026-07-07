@@ -19,6 +19,7 @@ import { computeStats, simplifyIndices, uid } from '../lib/geo';
 import { buildProfile, elevationsFor } from '../lib/elevation';
 import { fetchSnappedSegment } from '../lib/routing';
 import { buildGpx, parseGpx } from '../lib/gpx';
+import { createSharedPlan, fetchSharedPlan, supabaseConfigured } from '../lib/supabase';
 
 export interface AppState {
   plan: Plan;
@@ -486,9 +487,9 @@ interface SharePayload {
   w: { p: [number, number]; n: string; i: string; c: string; t: string }[];
 }
 
-export function buildShareUrl(): string {
+function buildSharePayload(): SharePayload {
   const p = store.getState().plan;
-  const payload: SharePayload = {
+  return {
     v: 1,
     n: p.name,
     act: p.activity,
@@ -502,8 +503,28 @@ export function buildShareUrl(): string {
       t: w.note,
     })),
   };
-  const hash = `#plan=${b64urlEncode(JSON.stringify(payload))}`;
-  return `${location.origin}${location.pathname}${hash}`;
+}
+
+function applySharePayload(payload: SharePayload) {
+  const plan = emptyPlan();
+  plan.name = payload.n ?? '';
+  plan.activity = payload.act ?? 'hike';
+  plan.anchors = (payload.a ?? []).map(([x, y]) => [x, y] as LngLat);
+  plan.waypoints = (payload.w ?? []).map((w) => ({
+    id: uid(),
+    lngLat: [w.p[0], w.p[1]] as LngLat,
+    name: w.n,
+    icon: w.i,
+    color: w.c,
+    note: w.t,
+  }));
+  for (let i = 0; i + 1 < plan.anchors.length; i++) {
+    const mode: SegmentMode = payload.m?.[i] === 1 ? 'snap' : 'straight';
+    plan.segments.push(makeSegment(plan.anchors[i], plan.anchors[i + 1], mode));
+  }
+  setPlan(plan);
+  const pts = [...plan.anchors, ...plan.waypoints.map((w) => w.lngLat)];
+  if (pts.length) requestFitBounds(pts);
 }
 
 export async function copyShareLink() {
@@ -512,7 +533,19 @@ export async function copyShareLink() {
     notify('Draw a route or add waypoints before sharing.', 'error');
     return;
   }
-  const url = buildShareUrl();
+  const payload = buildSharePayload();
+  let url: string | null = null;
+  if (supabaseConfigured) {
+    try {
+      const id = await createSharedPlan(payload);
+      url = `${location.origin}${location.pathname}#t=${id}`;
+    } catch {
+      url = null; // fall through to the self-contained link
+    }
+  }
+  if (!url) {
+    url = `${location.origin}${location.pathname}#plan=${b64urlEncode(JSON.stringify(payload))}`;
+  }
   history.replaceState(null, '', url);
   try {
     await navigator.clipboard.writeText(url);
@@ -523,29 +556,21 @@ export async function copyShareLink() {
 }
 
 export function loadFromHash(): boolean {
+  const t = location.hash.match(/#t=([A-Za-z0-9_-]+)/);
+  if (t) {
+    void (async () => {
+      try {
+        applySharePayload((await fetchSharedPlan(t[1])) as SharePayload);
+      } catch {
+        notify('Could not load the shared plan.', 'error');
+      }
+    })();
+    return true;
+  }
   const m = location.hash.match(/#plan=([A-Za-z0-9_-]+)/);
   if (!m) return false;
   try {
-    const payload = JSON.parse(b64urlDecode(m[1])) as SharePayload;
-    const plan = emptyPlan();
-    plan.name = payload.n ?? '';
-    plan.activity = payload.act ?? 'hike';
-    plan.anchors = payload.a.map(([x, y]) => [x, y] as LngLat);
-    plan.waypoints = (payload.w ?? []).map((w) => ({
-      id: uid(),
-      lngLat: [w.p[0], w.p[1]] as LngLat,
-      name: w.n,
-      icon: w.i,
-      color: w.c,
-      note: w.t,
-    }));
-    for (let i = 0; i + 1 < plan.anchors.length; i++) {
-      const mode: SegmentMode = payload.m?.[i] === 1 ? 'snap' : 'straight';
-      plan.segments.push(makeSegment(plan.anchors[i], plan.anchors[i + 1], mode));
-    }
-    setPlan(plan);
-    const pts = [...plan.anchors, ...plan.waypoints.map((w) => w.lngLat)];
-    if (pts.length) requestFitBounds(pts);
+    applySharePayload(JSON.parse(b64urlDecode(m[1])) as SharePayload);
     return true;
   } catch {
     notify('Could not read the shared plan link.', 'error');
